@@ -1,0 +1,35 @@
+[project]
+name = "oauth-app"
+version = "0.1.0"
+description = "A Microsoft Teams bot with Azure Graph integration"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "microsoft-teams-apps",
+    "microsoft-teams-graph",
+    "dotenv",
+    "msgraph-core>=1.3.8",
+    "langchain-openai>=1.0.3",
+    "langgraph>=1.0.3",
+    "msal>=1.34.0",
+    "pydantic-settings>=2.12.0",
+    "python-docx>=1.2.0",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.406",
+]
+
+[project.scripts]
+start = "src.main:main"
+typecheck = "pyright.cli:entrypoint"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
