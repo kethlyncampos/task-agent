@@ -16,9 +16,15 @@ from graph_api.mail_inbox import get_mail_inbox, format_email
 from graph_api.teams_messages import get_all_recent_teams_messages, format_teams_message, get_recent_chats, format_chat_summary
 from graph_api.todo_tasks import (
     get_todo_lists, get_tasks_from_list, create_task, complete_task,
-    update_task, delete_task, create_task_list, format_task, format_task_list
+    update_task, delete_task, create_task_list, format_task, format_task_list,
+    get_incomplete_tasks_from_list
 )
-from todo_list_generation.todo_list_generation import run_generate_todo_list, generate_single_task_from_user_message
+from todo_list_generation.todo_list_generation import (
+    run_generate_todo_list, 
+    generate_single_task_from_user_message,
+    complete_task_generation_workflow,
+    format_task_body
+)
 
 logger = logging.getLogger(__name__)
 
@@ -402,11 +408,11 @@ async def handle_add_task_command(ctx: ActivityContext[MessageActivity]):
         )
         return
     
-    # Get the first (default) task list
+    # Obtenha a primeira (padrão) lista de tarefas
     lists_result = await get_todo_lists(graph)
     
     if not lists_result['success'] or not lists_result['lists']:
-        await ctx.send("❌ No To Do lists found. Please create a list first.")
+        await ctx.send("❌ Nenhuma lista do To Do encontrada. Por favor, crie uma lista primeiro.")
         return
     
     default_list = lists_result['lists'][0]
@@ -416,39 +422,43 @@ async def handle_add_task_command(ctx: ActivityContext[MessageActivity]):
     await ctx.send("🤖 Gerando tarefa detalhada com IA...")
     
     try:
-        # Generate detailed task using AI
+        # Gerar tarefa detalhada com IA
         task_entry = await generate_single_task_from_user_message(task_text)
         
         if not task_entry or not task_entry.get('task'):
-            await ctx.send("❌ Could not generate task. Please try again with a clearer message.")
+            await ctx.send("❌ Não foi possível gerar a tarefa. Por favor, tente novamente com uma mensagem mais clara.")
             return
         
-        # Extract task details
+        # Extrair detalhes da tarefa
         task_title = task_entry.get('task', task_text)
         priority = task_entry.get('priority', 'normal')
         comments = task_entry.get('comments', '')
+        person_envolved = task_entry.get('person_envolved', '')
         due_date_raw = task_entry.get('due_date', None)
         
-        # Validate and format the due date
+        # Validar e formatar a data de vencimento
         due_date = None
         if due_date_raw:
             due_date = validate_and_format_date(str(due_date_raw))
             if not due_date:
-                logger.warning(f"Invalid due_date from AI: {due_date_raw}, ignoring it")
+                logger.warning(f"Data de vencimento inválida da IA: {due_date_raw}, ignorando")
         
-        # Map priority to importance
+        # Mapear prioridade para importância
         importance = "normal"
         if priority and 'high' in priority.lower():
             importance = "high"
         elif priority and 'low' in priority.lower():
             importance = "low"
         
-        # Create the task with AI-generated details
+        # Formatar corpo da tarefa com comentários e pessoa envolvida
+        task_body = format_task_body(comments=comments, person_envolved=person_envolved)
+        
+        # Criar a tarefa com os detalhes gerados pela IA
         result = await create_task(
             graph,
             list_id=list_id,
             title=task_title,
-            body=comments if comments else None,
+            body=task_body,
             due_date=due_date,
             importance=importance
         )
@@ -456,22 +466,22 @@ async def handle_add_task_command(ctx: ActivityContext[MessageActivity]):
         if result['success']:
             task = result['task']
             await ctx.send(
-                f"✅ **Tarefa Criada com Sucesso!**\n\n"
+                f"✅ **Tarefa criada com sucesso!**\n\n"
                 f"Lista: {list_name}\n"
                 f"{format_task(task)}\n\n"
                 f"💡 Use **'todo tasks'** para ver todas as suas tarefas"
             )
         else:
-            await ctx.send(f"❌ Erro ao criar tarefa: {result['error']}")
+            await ctx.send(f"❌ Erro ao criar a tarefa: {result['error']}")
             
     except Exception as e:
-        logger.error(f"Error in add task command: {str(e)}", exc_info=True)
+        logger.error(f"Erro no comando adicionar tarefa: {str(e)}", exc_info=True)
         await ctx.send(
             f"❌ **Erro ao gerar tarefa:** {str(e)}\n\n"
             "Criando tarefa simples sem IA..."
         )
         
-        # Fallback: create simple task without AI
+        # Alternativa: criar tarefa simples sem IA
         result = await create_task(
             graph,
             list_id=list_id,
@@ -484,49 +494,49 @@ async def handle_add_task_command(ctx: ActivityContext[MessageActivity]):
         if result['success']:
             task = result['task']
             await ctx.send(
-                f"✅ **Tarefa Criada!**\n\n"
+                f"✅ **Tarefa criada!**\n\n"
                 f"Lista: {list_name}\n"
                 f"{format_task(task)}"
             )
         else:
-            await ctx.send(f"❌ Erro ao criar tarefa: {result['error']}")
+            await ctx.send(f"❌ Erro ao criar a tarefa: {result['error']}")
 
 
 @app.on_message_pattern("todo create")
 async def handle_todo_create_command(ctx: ActivityContext[MessageActivity]):
-    """Handle todo create command to create a new task."""
+    """Lida com o comando 'todo create' para criar uma nova tarefa."""
     
     if not ctx.is_signed_in:
-        await ctx.send("🔐 Please sign in first to access Microsoft Graph.")
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
         await ctx.sign_in()
         return
     
     graph = ctx.user_graph
     
     if not graph:
-        await ctx.send("❌ Could not access Microsoft Graph.")
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
         return
     
-    # Get the first (default) task list
+    # Obtenha a primeira (padrão) lista de tarefas
     lists_result = await get_todo_lists(graph)
     
     if not lists_result['success'] or not lists_result['lists']:
-        await ctx.send("❌ No To Do lists found. Please create a list first.")
+        await ctx.send("❌ Nenhuma lista do To Do encontrada. Por favor, crie uma lista primeiro.")
         return
     
     default_list = lists_result['lists'][0]
     list_id = default_list.id
     list_name = default_list.display_name
     
-    # Example: Create a demo task
+    # Exemplo: Criar uma tarefa de demonstração
     from datetime import datetime, timedelta
     due_date = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d")
     
     result = await create_task(
         graph,
         list_id=list_id,
-        title="Demo Task - Review Project Documentation",
-        body="This is a sample task created via Microsoft Graph API. Please review and update all project documentation.",
+        title="Tarefa de demonstração - Revisar documentação do projeto",
+        body="Esta é uma tarefa modelo criada via Microsoft Graph API. Por favor, revise e atualize toda a documentação do projeto.",
         due_date=due_date,
         importance="high"
     )
@@ -534,93 +544,93 @@ async def handle_todo_create_command(ctx: ActivityContext[MessageActivity]):
     if result['success']:
         task = result['task']
         await ctx.send(
-            f"✅ **Task Created Successfully!**\n\n"
-            f"List: {list_name}\n"
+            f"✅ **Tarefa criada com sucesso!**\n\n"
+            f"Lista: {list_name}\n"
             f"{format_task(task)}\n\n"
-            f"💡 Use **'todo tasks'** to view all your tasks"
+            f"💡 Use **'todo tasks'** para ver todas as suas tarefas"
         )
     else:
-        await ctx.send(f"❌ Error creating task: {result['error']}")
+        await ctx.send(f"❌ Erro ao criar a tarefa: {result['error']}")
 
 
 @app.on_message_pattern("todo new list")
 async def handle_create_list_command(ctx: ActivityContext[MessageActivity]):
-    """Handle todo new list command to create a new task list."""
+    """Lida com o comando 'todo new list' para criar uma nova lista de tarefas."""
     
     if not ctx.is_signed_in:
-        await ctx.send("🔐 Please sign in first to access Microsoft Graph.")
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
         await ctx.sign_in()
         return
     
     graph = ctx.user_graph
     
     if not graph:
-        await ctx.send("❌ Could not access Microsoft Graph.")
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
         return
     
-    # Example: Create a new task list
+    # Exemplo: Criar uma nova lista de tarefas
     from datetime import datetime
-    list_name = f"Project Tasks - {datetime.now().strftime('%Y-%m-%d')}"
+    list_name = f"Tarefas do Projeto - {datetime.now().strftime('%Y-%m-%d')}"
     
     result = await create_task_list(graph, list_name)
     
     if result['success']:
         created_list = result['list']
         await ctx.send(
-            f"✅ **Task List Created!**\n\n"
+            f"✅ **Lista de tarefas criada!**\n\n"
             f"{format_task_list(created_list)}\n\n"
-            f"💡 Use **'todo lists'** to view all your lists"
+            f"💡 Use **'todo lists'** para ver todas as suas listas"
         )
     else:
-        await ctx.send(f"❌ Error creating list: {result['error']}")
+        await ctx.send(f"❌ Erro ao criar a lista: {result['error']}")
 
 
 @app.on_message_pattern("generate todo")
 async def handle_generate_todo_command(ctx: ActivityContext[MessageActivity]):
-    """Handle generate todo command - analyzes emails and Teams messages to create tasks."""
+    """Lida com o comando generate todo - analisa emails e mensagens do Teams para criar tarefas."""
     
     if not ctx.is_signed_in:
-        await ctx.send("🔐 Please sign in first to access Microsoft Graph.")
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
         await ctx.sign_in()
         return
     
     graph = ctx.user_graph
     
     if not graph:
-        await ctx.send("❌ Could not access Microsoft Graph.")
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
         return
     
-    await ctx.send("🤖 **AI Todo Generation Started**\n\nThis may take a moment...\n")
+    await ctx.send("🤖 **Geração de tarefas com IA iniciada**\n\nIsso pode levar um momento...\n")
     
     try:
-        # Step 1: Fetch emails from the last 40 days
+        # Etapa 1: Buscar emails dos últimos 40 dias
         from datetime import datetime, timedelta
         end_date = datetime.utcnow().isoformat() + 'Z'
         start_date = (datetime.utcnow() - timedelta(days=40)).isoformat() + 'Z'
         
-        await ctx.send("📧 Fetching emails from the last 40 days...")
+        await ctx.send("📧 Buscando emails dos últimos 40 dias...")
         emails_result = await get_mail_inbox(graph, start_date=start_date, end_date=end_date)
         
         if not emails_result['success']:
-            await ctx.send(f"⚠️ Warning: Could not fetch emails: {emails_result['error']}")
+            await ctx.send(f"⚠️ Aviso: Não foi possível buscar emails: {emails_result['error']}")
             emails = []
         else:
             emails = emails_result['emails']
-            await ctx.send(f"✅ Found {len(emails)} emails")
+            await ctx.send(f"✅ {len(emails)} emails encontrados")
         
-        # Step 2: Fetch recent Teams messages
-        await ctx.send("💬 Fetching recent Teams messages...")
+        # Etapa 2: Buscar mensagens recentes do Teams
+        await ctx.send("💬 Buscando mensagens recentes do Teams...")
         teams_result = await get_all_recent_teams_messages(graph, num_chats=5, messages_per_chat=10)
         
         if not teams_result['success']:
-            await ctx.send(f"⚠️ Warning: Could not fetch Teams messages: {teams_result['error']}")
+            await ctx.send(f"⚠️ Aviso: Não foi possível buscar mensagens do Teams: {teams_result['error']}")
             teams_messages = []
         else:
             teams_messages = teams_result['all_messages']
-            await ctx.send(f"✅ Found {len(teams_messages)} Teams messages")
+            await ctx.send(f"✅ {len(teams_messages)} mensagens do Teams encontradas")
         
-        # Step 3: Run AI todo list generation
-        await ctx.send("🧠 Analyzing content with AI to extract tasks...")
+        # Etapa 3: Rodar geração de tarefas com IA
+        await ctx.send("🧠 Analisando o conteúdo com IA para extrair tarefas...")
         
         todo_result = await run_generate_todo_list(
             raw_emails=emails,
@@ -632,56 +642,57 @@ async def handle_generate_todo_command(ctx: ActivityContext[MessageActivity]):
         teams_task_count = len(todo_result.get('teams_tasks', []))
         
         if not all_tasks:
-            await ctx.send("ℹ️ No actionable tasks were found in your emails and Teams messages.")
+            await ctx.send("ℹ️ Nenhuma tarefa acionável foi encontrada nos seus emails e mensagens do Teams.")
             return
         
         await ctx.send(
-            f"✅ **AI Analysis Complete!**\n\n"
-            f"Found {len(all_tasks)} tasks:\n"
-            f"• {email_task_count} from emails\n"
-            f"• {teams_task_count} from Teams messages\n\n"
-            f"Now creating tasks in Microsoft To Do..."
+            f"✅ **Análise da IA concluída!**\n\n"
+            f"Foram encontradas {len(all_tasks)} tarefas:\n"
+            f"• {email_task_count} dos emails\n"
+            f"• {teams_task_count} das mensagens do Teams\n\n"
+            f"Agora criando tarefas no Microsoft To Do..."
         )
         
-        # Step 4: Get the default To Do list
+        # Etapa 4: Obter a lista padrão do To Do
         lists_result = await get_todo_lists(graph)
         
         if not lists_result['success'] or not lists_result['lists']:
-            await ctx.send("❌ No To Do lists found. Please create a list first using **'todo new list'**")
+            await ctx.send("❌ Nenhuma lista do To Do encontrada. Por favor, crie uma lista primeiro, usando **'todo new list'**")
             return
         
         default_list = lists_result['lists'][0]
         list_id = default_list.id
         list_name = default_list.display_name
         
-        await ctx.send(f"📋 Adding tasks to: **{list_name}**\n")
+        await ctx.send(f"📋 Adicionando tarefas em: **{list_name}**\n")
         
-        # Step 5: Create tasks in Microsoft To Do
+        # Etapa 5: Criar tarefas no Microsoft To Do
         created_count = 0
         failed_count = 0
         
         for task_entry in all_tasks:
-            task_title = task_entry.get('task', 'Untitled Task')
+            task_title = task_entry.get('task', 'Tarefa sem título')
             priority = task_entry.get('priority', 'normal')
             comments = task_entry.get('comments', '')
+            person_envolved = task_entry.get('person_envolved', '')
             due_date = task_entry.get('due_date', None)
             
-            # Map priority to importance
+            # Mapear prioridade para importância
             importance = "normal"
             if priority and 'high' in priority.lower():
                 importance = "high"
             elif priority and 'low' in priority.lower():
                 importance = "low"
             
-            # Combine comments into body
-            body = comments if comments else None
+            # Formatar corpo da tarefa com comentários e pessoa envolvida
+            task_body = format_task_body(comments=comments, person_envolved=person_envolved)
             
-            # Create the task
+            # Criar a tarefa
             create_result = await create_task(
                 graph,
                 list_id=list_id,
                 title=task_title,
-                body=body,
+                body=task_body,
                 due_date=due_date,
                 importance=importance
             )
@@ -690,82 +701,470 @@ async def handle_generate_todo_command(ctx: ActivityContext[MessageActivity]):
                 created_count += 1
             else:
                 failed_count += 1
-                logger.warning(f"Failed to create task '{task_title}': {create_result['error']}")
+                logger.warning(f"Falha ao criar tarefa '{task_title}': {create_result['error']}")
         
-        # Step 6: Show results
-        success_msg = f"✅ **Successfully created {created_count} tasks in '{list_name}'!**\n\n"
+        # Etapa 6: Mostrar resultados
+        success_msg = f"✅ **{created_count} tarefas criadas com sucesso na lista '{list_name}'!**\n\n"
         
         if failed_count > 0:
-            success_msg += f"⚠️ {failed_count} task(s) could not be created.\n\n"
+            success_msg += f"⚠️ {failed_count} tarefa(s) não puderam ser criadas.\n\n"
         
-        # Show a preview of the first few tasks
+        # Mostrar amostra das primeiras tarefas criadas
         if created_count > 0:
-            success_msg += "**Sample of created tasks:**\n"
+            success_msg += "**Exemplo de tarefas criadas:**\n"
             for i, task_entry in enumerate(all_tasks[:3], 1):
-                task_title = task_entry.get('task', 'Untitled Task')
-                priority = task_entry.get('priority', 'neutral')
+                task_title = task_entry.get('task', 'Tarefa sem título')
+                priority = task_entry.get('priority', 'neutra')
                 priority_icon = "🔴" if 'high' in priority.lower() else "🟢" if 'low' in priority.lower() else "🟡"
                 success_msg += f"{i}. {priority_icon} {task_title}\n"
             
             if len(all_tasks) > 3:
-                success_msg += f"... and {len(all_tasks) - 3} more\n"
+                success_msg += f"... e mais {len(all_tasks) - 3}\n"
         
-        success_msg += f"\n💡 Use **'todo tasks'** to view all your tasks"
+        success_msg += f"\n💡 Use **'todo tasks'** para ver todas as suas tarefas"
         
         await ctx.send(success_msg)
         
     except Exception as e:
-        logger.error(f"Error in generate todo command: {str(e)}", exc_info=True)
-        await ctx.send(f"❌ **Error generating tasks:** {str(e)}\n\nPlease try again or contact support if the issue persists.")
+        logger.error(f"Erro no comando generate todo: {str(e)}", exc_info=True)
+        await ctx.send(f"❌ **Erro ao gerar tarefas:** {str(e)}\n\nPor favor, tente novamente ou entre em contato com o suporte se o problema persistir.")
+
+
+@app.on_message_pattern("generate new tasks")
+async def handle_generate_new_tasks_command(ctx: ActivityContext[MessageActivity]):
+    """
+    Lida com o comando generate new tasks - analisa emails e mensagens do Teams
+    para criar tarefas com deduplicação inteligente contra tarefas já existentes e incompletas.
+    """
+    
+    if not ctx.is_signed_in:
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
+        await ctx.sign_in()
+        return
+    
+    graph = ctx.user_graph
+    
+    if not graph:
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
+        return
+    
+    await ctx.send(
+        "🚀 **Geração de tarefas com IA e deduplicação inteligente**\n\n"
+        "Isso irá:\n"
+        "1️⃣ Analisar seus emails e mensagens recentes do Teams\n"
+        "2️⃣ Extrair tarefas acionáveis usando IA\n"
+        "3️⃣ Comparar com suas tarefas incompletas existentes\n"
+        "4️⃣ Criar apenas tarefas NOVAS e não duplicadas\n\n"
+        "⏳ Processando... Isso pode demorar um pouco..."
+    )
+    
+    try:
+        # Etapa 1: Buscar emails dos últimos 2 dias
+        from datetime import datetime, timedelta, timezone
+        end_date = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        start_date = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat().replace('+00:00', 'Z')
+        
+        await ctx.send("📧 Buscando emails dos últimos 2 dias...")
+        emails_result = await get_mail_inbox(graph, start_date=start_date, end_date=end_date)
+        
+        if not emails_result['success']:
+            await ctx.send(f"⚠️ Aviso: Não foi possível buscar emails: {emails_result['error']}")
+            emails = []
+        else:
+            emails = emails_result['emails']
+            await ctx.send(f"✅ {len(emails)} emails encontrados")
+        
+        # Etapa 2: Buscar mensagens recentes do Teams
+        await ctx.send("💬 Buscando mensagens recentes do Teams...")
+        teams_result = await get_all_recent_teams_messages(graph, num_chats=5, messages_per_chat=10)
+        
+        if not teams_result['success']:
+            await ctx.send(f"⚠️ Aviso: Não foi possível buscar mensagens do Teams: {teams_result['error']}")
+            teams_messages = []
+        else:
+            teams_messages = teams_result['all_messages']
+            await ctx.send(f"✅ {len(teams_messages)} mensagens do Teams encontradas")
+        
+        # Conferir se há conteúdo para analisar
+        if not emails and not teams_messages:
+            await ctx.send(
+                "ℹ️ **Nenhum conteúdo encontrado para análise**\n\n"
+                "Nenhum email ou mensagem do Teams foi encontrado no período especificado.\n"
+                "Tente novamente mais tarde, quando houver novas comunicações."
+            )
+            return
+        
+        # Etapa 3: Buscar a lista padrão do To Do para criação das tarefas
+        lists_result = await get_todo_lists(graph)
+        
+        if not lists_result['success'] or not lists_result['lists']:
+            await ctx.send("❌ Nenhuma lista do To Do encontrada. Por favor, crie uma lista primeiro, usando **'todo new list'**")
+            return
+        
+        default_list = lists_result['lists'][0]
+        list_id = default_list.id
+        list_name = default_list.display_name
+        
+        await ctx.send(f"📋 Lista alvo: **{list_name}**")
+        
+        # Etapa 4: Rodar workflow completo com deduplicação
+        await ctx.send("🧠 Executando análise com IA e deduplicação...")
+        
+        workflow_result = await complete_task_generation_workflow(
+            graph_client=graph,
+            raw_emails=emails,
+            raw_teams_messages=teams_messages,
+            target_list_id=list_id,
+            user_id=ctx.activity.from_.id if hasattr(ctx.activity, 'from_') and ctx.activity.from_ else "desconhecido",
+            session_id=ctx.activity.conversation.id if hasattr(ctx.activity, 'conversation') and ctx.activity.conversation else "desconhecido"
+        )
+        
+        # Etapa 5: Exibir resultados detalhados
+        if workflow_result['success']:
+            created_tasks = workflow_result.get('created_tasks', [])
+            duplicate_tasks = workflow_result.get('duplicate_tasks', [])
+            all_generated_tasks = workflow_result.get('all_generated_tasks', [])
+            creation_errors = workflow_result.get('creation_errors', [])
+            
+            # Montar resposta detalhada
+            response = f"""
+✅ **Geração de tarefas concluída!**
+
+{workflow_result['summary']}
+"""
+            
+            # Amostra das tarefas criadas
+            if created_tasks:
+                response += "\n\n**📝 Novas tarefas criadas:**\n"
+                for i, task_info in enumerate(created_tasks[:5], 1):
+                    response += f"{i}. {task_info.get('title', 'Sem título')}\n"
+                
+                if len(created_tasks) > 5:
+                    response += f"... e mais {len(created_tasks) - 5}\n"
+            
+            # Exibir duplicatas puladas
+            if duplicate_tasks:
+                response += f"\n\n**🔄 Duplicatas ignoradas ({len(duplicate_tasks)}):**\n"
+                for i, task_data in enumerate(duplicate_tasks[:3], 1):
+                    task_title = task_data.get('task', 'Desconhecido')[:60]
+                    response += f"{i}. {task_title}\n"
+                
+                if len(duplicate_tasks) > 3:
+                    response += f"... e mais {len(duplicate_tasks) - 3}\n"
+            
+            # Exibir erros, se presentes
+            if creation_errors:
+                response += f"\n\n⚠️ **Erros ({len(creation_errors)}):**\n"
+                for error_info in creation_errors[:3]:
+                    if isinstance(error_info, dict):
+                        task_name = error_info.get('task', 'Desconhecido')[:40]
+                        error_msg = error_info.get('error', 'Erro desconhecido')[:60]
+                        response += f"• {task_name}: {error_msg}\n"
+                    else:
+                        response += f"• {str(error_info)[:80]}\n"
+            
+            response += f"\n\n💡 Use **'todo tasks'** para ver todas as suas tarefas"
+            
+            await ctx.send(response)
+            
+        else:
+            error_msg = workflow_result.get('summary', 'Erro desconhecido')
+            await ctx.send(f"❌ **Falha no workflow:**\n\n{error_msg}\n\nPor favor, tente novamente ou entre em contato com o suporte.")
+        
+    except Exception as e:
+        logger.error(f"Erro no comando generate new tasks: {str(e)}", exc_info=True)
+        await ctx.send(
+            f"❌ **Erro ao gerar tarefas:**\n\n{str(e)}\n\n"
+            "Por favor, tente novamente ou entre em contato com o suporte se o problema persistir."
+        )
+
+
+@app.on_message_pattern("delete all tasks")
+async def handle_delete_all_tasks_command(ctx: ActivityContext[MessageActivity]):
+    """
+    Lida com o comando delete all tasks - deleta todas as tarefas de todas as listas.
+    Requer confirmação do usuário por segurança.
+    """
+    
+    if not ctx.is_signed_in:
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
+        await ctx.sign_in()
+        return
+    
+    graph = ctx.user_graph
+    
+    if not graph:
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
+        return
+    
+    await ctx.send(
+        "⚠️ **AVISO: Operação Perigosa!**\n\n"
+        "Você está prestes a **DELETAR TODAS AS TAREFAS** de todas as suas listas no Microsoft To Do.\n\n"
+        "Esta ação **NÃO PODE SER DESFEITA**!\n\n"
+        "Para confirmar, responda com: **CONFIRMAR EXCLUSÃO**\n"
+        "Para cancelar, responda com qualquer outra coisa."
+    )
+
+
+@app.on_message_pattern(re.compile(r"^CONFIRMAR EXCLUSÃO$", re.IGNORECASE))
+async def handle_confirm_delete_all_tasks(ctx: ActivityContext[MessageActivity]):
+    """Confirma e executa a exclusão de todas as tarefas."""
+    
+    if not ctx.is_signed_in:
+        await ctx.send("🔐 Por favor, faça login primeiro.")
+        return
+    
+    graph = ctx.user_graph
+    
+    if not graph:
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
+        return
+    
+    await ctx.send("🗑️ **Iniciando exclusão de todas as tarefas...**\n\nIsso pode levar alguns momentos...")
+    
+    try:
+        # Etapa 1: Buscar todas as listas
+        lists_result = await get_todo_lists(graph)
+        
+        if not lists_result['success']:
+            await ctx.send(f"❌ Erro ao buscar listas: {lists_result['error']}")
+            return
+        
+        lists = lists_result['lists']
+        
+        if not lists:
+            await ctx.send("ℹ️ Nenhuma lista de tarefas encontrada.")
+            return
+        
+        await ctx.send(f"📋 Encontradas {len(lists)} lista(s). Processando...")
+        
+        # Contadores
+        total_deleted = 0
+        total_failed = 0
+        lists_processed = 0
+        
+        # Etapa 2: Para cada lista, buscar e deletar todas as tarefas
+        for task_list in lists:
+            list_id = task_list.id
+            list_name = task_list.display_name or "Lista sem nome"
+            
+            # Buscar todas as tarefas da lista
+            tasks_result = await get_tasks_from_list(graph, list_id)
+            
+            if not tasks_result['success']:
+                await ctx.send(f"⚠️ Erro ao buscar tarefas de '{list_name}': {tasks_result['error']}")
+                continue
+            
+            tasks = tasks_result['tasks']
+            
+            if not tasks:
+                await ctx.send(f"✓ '{list_name}': 0 tarefas")
+                lists_processed += 1
+                continue
+            
+            await ctx.send(f"🗑️ Deletando {len(tasks)} tarefa(s) de '{list_name}'...")
+            
+            # Deletar cada tarefa
+            deleted_count = 0
+            failed_count = 0
+            
+            for task in tasks:
+                task_id = task.id
+                task_title = task.title or "Sem título"
+                
+                delete_result = await delete_task(graph, list_id, task_id)
+                
+                if delete_result['success']:
+                    deleted_count += 1
+                    total_deleted += 1
+                else:
+                    failed_count += 1
+                    total_failed += 1
+                    logger.warning(f"Falha ao deletar tarefa '{task_title}': {delete_result['error']}")
+            
+            lists_processed += 1
+            await ctx.send(
+                f"✓ '{list_name}': {deleted_count} deletada(s)"
+                + (f", {failed_count} falha(s)" if failed_count > 0 else "")
+            )
+        
+        # Etapa 3: Resumo final
+        summary_msg = f"""
+✅ **Exclusão Concluída!**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 **Resumo:**
+• Listas processadas: {lists_processed}
+• Tarefas deletadas: {total_deleted}
+"""
+        
+        if total_failed > 0:
+            summary_msg += f"• Falhas: {total_failed}\n"
+        
+        summary_msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        if total_deleted > 0:
+            summary_msg += "\n\n🎉 Todas as tarefas foram removidas com sucesso!"
+        
+        await ctx.send(summary_msg)
+        
+    except Exception as e:
+        logger.error(f"Erro no comando delete all tasks: {str(e)}", exc_info=True)
+        await ctx.send(
+            f"❌ **Erro ao deletar tarefas:**\n\n{str(e)}\n\n"
+            "Algumas tarefas podem ter sido deletadas antes do erro."
+        )
+
+
+@app.on_message_pattern("delete incomplete tasks")
+async def handle_delete_incomplete_tasks_command(ctx: ActivityContext[MessageActivity]):
+    """
+    Lida com o comando delete incomplete tasks - deleta apenas tarefas incompletas.
+    """
+    
+    if not ctx.is_signed_in:
+        await ctx.send("🔐 Por favor, faça login primeiro para acessar o Microsoft Graph.")
+        await ctx.sign_in()
+        return
+    
+    graph = ctx.user_graph
+    
+    if not graph:
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
+        return
+    
+    await ctx.send(
+        "⚠️ **AVISO!**\n\n"
+        "Você está prestes a **DELETAR TODAS AS TAREFAS INCOMPLETAS**.\n\n"
+        "Tarefas concluídas não serão afetadas.\n\n"
+        "Para confirmar, responda com: **CONFIRMAR EXCLUSÃO INCOMPLETAS**\n"
+        "Para cancelar, responda com qualquer outra coisa."
+    )
+
+
+@app.on_message_pattern(re.compile(r"^CONFIRMAR EXCLUSÃO INCOMPLETAS$", re.IGNORECASE))
+async def handle_confirm_delete_incomplete_tasks(ctx: ActivityContext[MessageActivity]):
+    """Confirma e executa a exclusão de tarefas incompletas."""
+    
+    if not ctx.is_signed_in:
+        await ctx.send("🔐 Por favor, faça login primeiro.")
+        return
+    
+    graph = ctx.user_graph
+    
+    if not graph:
+        await ctx.send("❌ Não foi possível acessar o Microsoft Graph.")
+        return
+    
+    await ctx.send("🗑️ **Deletando tarefas incompletas...**")
+    
+    try:
+        # Buscar todas as listas
+        lists_result = await get_todo_lists(graph)
+        
+        if not lists_result['success']:
+            await ctx.send(f"❌ Erro ao buscar listas: {lists_result['error']}")
+            return
+        
+        lists = lists_result['lists']
+        
+        if not lists:
+            await ctx.send("ℹ️ Nenhuma lista de tarefas encontrada.")
+            return
+        
+        total_deleted = 0
+        total_failed = 0
+        
+        for task_list in lists:
+            list_id = task_list.id
+            list_name = task_list.display_name or "Lista sem nome"
+            
+            # Buscar apenas tarefas incompletas
+            tasks_result = await get_incomplete_tasks_from_list(graph, list_id)
+            
+            if not tasks_result['success']:
+                continue
+            
+            tasks = tasks_result['tasks']
+            
+            if not tasks:
+                continue
+            
+            await ctx.send(f"🗑️ '{list_name}': deletando {len(tasks)} tarefa(s) incompleta(s)...")
+            
+            for task in tasks:
+                delete_result = await delete_task(graph, list_id, task.id)
+                
+                if delete_result['success']:
+                    total_deleted += 1
+                else:
+                    total_failed += 1
+        
+        await ctx.send(
+            f"✅ **Concluído!**\n\n"
+            f"• Tarefas incompletas deletadas: {total_deleted}\n"
+            + (f"• Falhas: {total_failed}\n" if total_failed > 0 else "") +
+            f"\n💡 Use **'todo tasks'** para verificar as tarefas restantes"
+        )
+        
+    except Exception as e:
+        logger.error(f"Erro ao deletar tarefas incompletas: {str(e)}", exc_info=True)
+        await ctx.send(f"❌ **Erro:** {str(e)}")
 
 
 @app.on_message
 async def handle_default_message(ctx: ActivityContext[MessageActivity]):
-    """Handle default message - trigger signin."""
+    """Lida com mensagens padrão - aciona login."""
     if ctx.is_signed_in:
         await ctx.send(
-            "✅ You are already signed in!\n\n"
-            "**Available commands:**\n\n"
+            "✅ Você já está conectado!\n\n"
+            "**Comandos disponíveis:**\n\n"
             "📧 **Email & Teams:**\n"
-            "• **emails** - View recent emails\n"
-            "• **teams** - View recent Teams messages\n"
-            "• **chats** - List your recent chats\n\n"
-            "✅ **To Do Tasks:**\n"
-            "• **add task {text}** - ⚡ Quick: Create a task from your message\n"
-            "• **generate todo** - 🤖 AI-powered: Analyze emails & Teams to create tasks\n"
-            "• **todo lists** - View all your task lists\n"
-            "• **todo tasks** - View tasks from default list\n"
-            "• **todo create** - Create a sample task\n"
-            "• **todo new list** - Create a new task list\n\n"
-            "👤 **Profile & Auth:**\n"
-            "• **profile** - View your profile\n"
-            "• **signout** - Sign out when done"
+            "• **emails** - Ver emails recentes\n"
+            "• **teams** - Ver mensagens recentes do Teams\n"
+            "• **chats** - Listar seus chats recentes\n\n"
+            "✅ **Tarefas do To Do:**\n"
+            "• **add task {texto}** - ⚡ Rápido: crie uma tarefa a partir da sua mensagem\n"
+            "• **generate new tasks** - 🚀 IA: Deduplicação inteligente (Recomendado!)\n"
+            "• **generate todo** - 🤖 IA: Analisa emails e Teams para criar tarefas\n"
+            "• **todo lists** - Ver todas as suas listas de tarefas\n"
+            "• **todo tasks** - Ver tarefas da lista padrão\n"
+            "• **todo create** - Criar uma tarefa de exemplo\n"
+            "• **todo new list** - Criar uma nova lista de tarefas\n"
+            "• **delete all tasks** - 🗑️ Deletar TODAS as tarefas (requer confirmação)\n"
+            "• **delete incomplete tasks** - 🗑️ Deletar apenas tarefas incompletas\n\n"
+            "👤 **Perfil & Autenticação:**\n"
+            "• **profile** - Ver seu perfil\n"
+            "• **signout** - Sair da conta"
         )
     else:
-        await ctx.send("🔐 Please sign in to access Microsoft Graph...")
+        await ctx.send("🔐 Por favor, faça login para acessar o Microsoft Graph...")
         await ctx.sign_in()
 
 
 @app.event("sign_in")
 async def handle_sign_in_event(event: SignInEvent):
-    """Handle successful sign-in events."""
+    """Lida com eventos de login bem-sucedido."""
     await event.activity_ctx.send(
-        "✅ **Successfully signed in!**\n\n"
-        "**Available commands:**\n\n"
+        "✅ **Login realizado com sucesso!**\n\n"
+        "**Comandos disponíveis:**\n\n"
         "📧 **Email & Teams:**\n"
-        "• **emails** - View recent emails\n"
-        "• **teams** - View recent Teams messages\n"
-        "• **chats** - List your recent chats\n\n"
-        "✅ **To Do Tasks:**\n"
-        "• **add task {text}** - ⚡ Quick: Create a task from your message\n"
-        "• **generate todo** - 🤖 AI-powered: Analyze emails & Teams to create tasks\n"
-        "• **todo lists** - View all your task lists\n"
-        "• **todo tasks** - View tasks from default list\n"
-        "• **todo create** - Create a sample task\n"
-        "• **todo new list** - Create a new task list\n\n"
-        "👤 **Profile & Auth:**\n"
-        "• **profile** - View your profile\n"
-        "• **signout** - Sign out when done"
+        "• **emails** - Ver emails recentes\n"
+        "• **teams** - Ver mensagens recentes do Teams\n"
+        "• **chats** - Listar seus chats recentes\n\n"
+        "✅ **Tarefas do To Do:**\n"
+        "• **add task {texto}** - ⚡ Rápido: crie uma tarefa a partir da sua mensagem\n"
+        "• **generate new tasks** - 🚀 IA: Deduplicação inteligente (Recomendado!)\n"
+        "• **generate todo** - 🤖 IA: Analisa emails e Teams para criar tarefas\n"
+        "• **todo lists** - Ver todas as suas listas de tarefas\n"
+        "• **todo tasks** - Ver tarefas da lista padrão\n"
+        "• **todo create** - Criar uma tarefa de exemplo\n"
+        "• **todo new list** - Criar uma nova lista de tarefas\n"
+        "• **delete all tasks** - 🗑️ Deletar TODAS as tarefas (requer confirmação)\n"
+        "• **delete incomplete tasks** - 🗑️ Deletar apenas tarefas incompletas\n\n"
+        "👤 **Perfil & Autenticação:**\n"
+        "• **profile** - Ver seu perfil\n"
+        "• **signout** - Sair da conta"
     )
 
 

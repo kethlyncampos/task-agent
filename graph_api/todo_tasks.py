@@ -94,6 +94,127 @@ async def get_tasks_from_list(graph, list_id: str):
         }
 
 
+async def get_incomplete_tasks_from_list(graph, list_id: str):
+    """
+    Fetch all incomplete (not completed) tasks from a specific To Do list.
+    
+    Parameters:
+        graph: The Microsoft Graph client instance
+        list_id (str): The ID of the task list
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'tasks': list,  # List of incomplete task objects
+            'error': str or None
+        }
+    """
+    try:
+        # Create request configuration with filter for incomplete tasks
+        query_params = TasksRequestBuilder.TasksRequestBuilderGetQueryParameters()
+        query_params.filter = "status ne 'completed'"
+        query_params.orderby = ["createdDateTime DESC"]
+        
+        request_config = RequestConfiguration(query_parameters=query_params)
+        
+        # Get incomplete tasks from the list
+        tasks_response = await graph.me.todo.lists.by_todo_task_list_id(list_id).tasks.get(
+            request_configuration=request_config
+        )
+        
+        # Extract tasks from response
+        tasks = tasks_response.value if tasks_response and tasks_response.value else []
+        
+        return {
+            'success': True,
+            'tasks': tasks,
+            'count': len(tasks),
+            'error': None
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'tasks': [],
+            'count': 0,
+            'error': f"Error fetching incomplete tasks: {str(e)}"
+        }
+
+
+async def get_all_incomplete_tasks(graph):
+    """
+    Fetch all incomplete (not completed) tasks from all To Do lists.
+    
+    Parameters:
+        graph: The Microsoft Graph client instance
+    
+    Returns:
+        dict: {
+            'success': bool,
+            'tasks_by_list': dict,  # Dictionary mapping list_name -> list of tasks
+            'all_tasks': list,  # Flat list of all incomplete tasks
+            'total_count': int,  # Total number of incomplete tasks
+            'error': str or None
+        }
+    """
+    try:
+        tasks_by_list = {}
+        all_tasks = []
+        
+        # First, get all task lists
+        lists_result = await get_todo_lists(graph)
+        
+        if not lists_result['success']:
+            return {
+                'success': False,
+                'tasks_by_list': {},
+                'all_tasks': [],
+                'total_count': 0,
+                'error': lists_result['error']
+            }
+        
+        # For each list, get incomplete tasks
+        for task_list in lists_result['lists']:
+            list_id = task_list.id
+            list_name = task_list.display_name or "(Unnamed list)"
+            
+            # Get incomplete tasks from this list
+            tasks_result = await get_incomplete_tasks_from_list(graph, list_id)
+            
+            if tasks_result['success'] and tasks_result['tasks']:
+                # Store tasks organized by list
+                tasks_by_list[list_name] = {
+                    'list_id': list_id,
+                    'tasks': tasks_result['tasks']
+                }
+                
+                # Add to flat list with list name info
+                for task in tasks_result['tasks']:
+                    task_with_list = {
+                        'list_name': list_name,
+                        'list_id': list_id,
+                        'task': task
+                    }
+                    all_tasks.append(task_with_list)
+        
+        return {
+            'success': True,
+            'tasks_by_list': tasks_by_list,
+            'all_tasks': all_tasks,
+            'total_count': len(all_tasks),
+            'error': None
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'tasks_by_list': {},
+            'all_tasks': [],
+            'total_count': 0,
+            'error': f"Error fetching all incomplete tasks: {str(e)}"
+        }
+
+
 async def create_task(graph, list_id: str, title: str, body: str = None, 
                      due_date: str = None, importance: str = "normal"):
     """
@@ -405,4 +526,66 @@ def format_task_list(task_list) -> str:
         
     except Exception as e:
         return f"Error formatting list: {str(e)}"
+
+
+def format_incomplete_tasks_summary(tasks_by_list: Dict[str, Any]) -> str:
+    """
+    Format incomplete tasks grouped by list into a readable summary.
+    
+    Args:
+        tasks_by_list: Dictionary from get_all_incomplete_tasks()
+    
+    Returns:
+        str: Formatted summary string
+    """
+    if not tasks_by_list:
+        return "✅ No incomplete tasks found! Great job!"
+    
+    lines = ["📝 **Incomplete Tasks:**\n"]
+    total_tasks = 0
+    
+    for list_name, list_data in tasks_by_list.items():
+        tasks = list_data['tasks']
+        task_count = len(tasks)
+        total_tasks += task_count
+        
+        lines.append(f"📋 **{list_name}** ({task_count} task{'s' if task_count != 1 else ''})")
+        
+        for i, task in enumerate(tasks[:10], 1):  # Show first 10 tasks per list
+            title = task.title or "(No title)"
+            
+            # Add importance indicator
+            importance_icon = ""
+            if task.importance:
+                importance_str = str(task.importance).lower()
+                if "high" in importance_str:
+                    importance_icon = "❗"
+                elif "low" in importance_str:
+                    importance_icon = "🔽"
+            
+            # Add due date if available
+            due_info = ""
+            if task.due_date_time and task.due_date_time.date_time:
+                try:
+                    due_date = task.due_date_time.date_time
+                    if isinstance(due_date, str):
+                        dt = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+                        # Check if overdue
+                        if dt.date() < datetime.now().date():
+                            due_info = f" ⚠️ (Overdue: {dt.strftime('%Y-%m-%d')})"
+                        else:
+                            due_info = f" 📅 (Due: {dt.strftime('%Y-%m-%d')})"
+                except:
+                    pass
+            
+            lines.append(f"   {i}. {importance_icon}⬜ {title}{due_info}")
+        
+        if task_count > 10:
+            lines.append(f"   ... and {task_count - 10} more task{'s' if task_count - 10 != 1 else ''}")
+        
+        lines.append("")  # Empty line between lists
+    
+    lines.insert(1, f"**Total: {total_tasks} incomplete task{'s' if total_tasks != 1 else ''}**\n")
+    
+    return "\n".join(lines)
 
